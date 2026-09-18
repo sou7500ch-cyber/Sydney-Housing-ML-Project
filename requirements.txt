@@ -1,0 +1,7 @@
+streamlit
+pandas
+numpy
+joblib
+scikit-learn
+pytest
+pip-audit
