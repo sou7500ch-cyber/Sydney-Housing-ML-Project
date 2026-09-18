@@ -1,10 +1,14 @@
 from database import (
+    initialise_database,
     create_property,
     get_all_properties,
     get_property,
     update_property,
     delete_property,
 )
+
+
+initialise_database()
 
 
 def test_create_property():
