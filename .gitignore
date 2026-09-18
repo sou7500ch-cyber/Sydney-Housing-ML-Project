@@ -1,2 +1,10 @@
 *.DAT
 .ipynb_checkpoints/
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store
+
+data/*.db
+data/*.db
