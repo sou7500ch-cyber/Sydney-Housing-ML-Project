@@ -1,15 +1,15 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
 import joblib
+import numpy as np
+import pandas as pd
+import streamlit as st
 
 from database import (
-    initialise_database,
     create_property,
+    delete_property,
     get_all_properties,
     get_property,
+    initialise_database,
     update_property,
-    delete_property
 )
 
 # Initialise database

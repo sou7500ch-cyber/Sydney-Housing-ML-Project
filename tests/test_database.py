@@ -1,12 +1,11 @@
 from database import (
-    initialise_database,
     create_property,
+    delete_property,
     get_all_properties,
     get_property,
+    initialise_database,
     update_property,
-    delete_property,
 )
-
 
 initialise_database()
 
