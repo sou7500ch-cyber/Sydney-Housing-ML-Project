@@ -33,8 +33,9 @@ pipeline {
             steps {
                 echo '=== CODE QUALITY STAGE ==='
                 sh '''
-                    .venv/bin/python -m compileall -q app.py database.py
-                    echo "Python syntax validation passed."
+                    echo "Running Ruff static code analysis..."
+                    .venv/bin/ruff check app.py database.py tests/
+                    echo "Ruff quality gate PASSED."
                 '''
             }
         }
@@ -54,10 +55,12 @@ pipeline {
                 echo '=== DEPLOY STAGE ==='
                 sh '''
                     mkdir -p deployment
+
                     cp app.py deployment/
                     cp database.py deployment/
                     cp model_features.pkl deployment/
                     cp sydney_housing_random_forest.pkl deployment/
+
                     echo "Application deployment package prepared."
                 '''
             }
@@ -68,7 +71,9 @@ pipeline {
                 echo '=== RELEASE STAGE ==='
                 sh '''
                     mkdir -p releases
+
                     tar -czf releases/sydney-housing-${BUILD_NUMBER}.tar.gz deployment/
+
                     echo "Release package created:"
                     ls -lh releases/
                 '''
@@ -80,9 +85,11 @@ pipeline {
                 echo '=== MONITORING STAGE ==='
                 sh '''
                     echo "Application health validation"
+
                     test -f deployment/app.py
                     test -f deployment/database.py
                     test -f deployment/sydney_housing_random_forest.pkl
+
                     echo "Health check PASSED."
                 '''
             }
@@ -90,6 +97,7 @@ pipeline {
     }
 
     post {
+
         success {
             echo '=== PIPELINE COMPLETED SUCCESSFULLY ==='
         }
