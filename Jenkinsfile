@@ -269,6 +269,12 @@ EOF
 
         success {
             echo '=== PIPELINE COMPLETED SUCCESSFULLY ==='
+
+            archiveArtifacts artifacts: 'monitoring/metrics.txt, monitoring/alert.log, deployment/streamlit.log, releases/*.tar.gz',
+                             allowEmptyArchive: false,
+                             fingerprint: true
+
+            echo 'Monitoring reports and release artifacts archived successfully.'
         }
 
         failure {
