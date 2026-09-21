@@ -1,4 +1,5 @@
 pipeline {
+
     agent any
 
     environment {
@@ -14,8 +15,11 @@ pipeline {
                 echo '=== BUILD STAGE ==='
                 sh '''
                     python3 --version
+
                     python3 -m venv .venv
+
                     .venv/bin/python -m pip install --upgrade pip
+
                     .venv/bin/pip install -r requirements.txt
                 '''
             }
@@ -35,7 +39,9 @@ pipeline {
                 echo '=== CODE QUALITY STAGE ==='
                 sh '''
                     echo "Running Ruff static code analysis..."
+
                     .venv/bin/ruff check app.py database.py tests/
+
                     echo "Ruff quality gate PASSED."
                 '''
             }
@@ -46,6 +52,7 @@ pipeline {
                 echo '=== SECURITY STAGE ==='
                 sh '''
                     .venv/bin/pip install pip-audit
+
                     .venv/bin/pip-audit
                 '''
             }
@@ -54,8 +61,50 @@ pipeline {
         stage('Deploy') {
             steps {
                 echo '=== DEPLOY STAGE ==='
+
                 sh '''
+                    set +e
+
                     mkdir -p deployment
+                    mkdir -p rollback
+
+                    echo "=== PREPARING DEPLOYMENT ==="
+
+                    PREVIOUS_DEPLOYMENT=false
+
+                    if [ -f deployment/app.py ] && \
+                       [ -f deployment/database.py ] && \
+                       [ -f deployment/model_features.pkl ] && \
+                       [ -f deployment/sydney_housing_random_forest.pkl ]
+                    then
+                        echo "Existing deployment detected."
+                        echo "Creating backup for rollback..."
+
+                        rm -rf rollback/previous
+                        mkdir -p rollback/previous
+
+                        cp deployment/app.py rollback/previous/
+                        cp deployment/database.py rollback/previous/
+                        cp deployment/model_features.pkl rollback/previous/
+                        cp deployment/sydney_housing_random_forest.pkl rollback/previous/
+
+                        if [ -f deployment/release-info.txt ]
+                        then
+                            cp deployment/release-info.txt rollback/previous/
+                        fi
+
+                        PREVIOUS_DEPLOYMENT=true
+
+                        echo "Previous deployment backed up successfully."
+                    else
+                        echo "No previous deployment found."
+                        echo "This is the initial deployment."
+                    fi
+
+                    echo "=== DEPLOYING NEW VERSION ==="
+
+                    rm -f deployment/streamlit.pid
+                    rm -f deployment/streamlit.log
 
                     cp app.py deployment/
                     cp database.py deployment/
@@ -71,13 +120,165 @@ pipeline {
                         --server.port ${APP_PORT} \
                         > deployment/streamlit.log 2>&1 &
 
-                    echo $! > deployment/streamlit.pid
+                    NEW_PID=$!
+
+                    echo "$NEW_PID" > deployment/streamlit.pid
 
                     echo "Streamlit staging process started."
-                    echo "Process ID:"
-                    cat deployment/streamlit.pid
-
+                    echo "Process ID: $NEW_PID"
                     echo "Staging port: ${APP_PORT}"
+
+                    echo "=== DEPLOYMENT STARTUP VERIFICATION ==="
+
+                    STARTUP_OK=false
+
+                    for i in 1 2 3 4 5 6 7 8 9 10
+                    do
+                        if kill -0 "$NEW_PID" 2>/dev/null
+                        then
+                            if curl -fsS \
+                                --max-time 3 \
+                                -o /dev/null \
+                                http://localhost:${APP_PORT}
+                            then
+                                echo "Deployment health check PASSED."
+                                echo "Streamlit returned HTTP 200."
+                                STARTUP_OK=true
+                                break
+                            fi
+                        fi
+
+                        echo "Waiting for Streamlit to become healthy... attempt $i/10"
+                        sleep 2
+                    done
+
+                    if [ "$STARTUP_OK" = "true" ]
+                    then
+                        echo "=== DEPLOYMENT SUCCESSFUL ==="
+
+                        cat > rollback/rollback-info.txt <<EOF
+Deployment Status: SUCCESS
+Deployment Time: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+Jenkins Build: ${BUILD_NUMBER}
+Application: ${APP_NAME}
+Port: ${APP_PORT}
+New Process ID: ${NEW_PID}
+Previous Deployment Available: ${PREVIOUS_DEPLOYMENT}
+Rollback Status: Not Required
+EOF
+
+                        cat rollback/rollback-info.txt
+
+                        exit 0
+                    fi
+
+                    echo "=== DEPLOYMENT FAILURE DETECTED ==="
+                    echo "New deployment failed startup verification."
+
+                    echo "Stopping failed deployment..."
+
+                    if kill -0 "$NEW_PID" 2>/dev/null
+                    then
+                        kill "$NEW_PID" || true
+                    fi
+
+                    if [ "$PREVIOUS_DEPLOYMENT" = "true" ]
+                    then
+                        echo "=== STARTING AUTOMATIC ROLLBACK ==="
+
+                        rm -f deployment/app.py
+                        rm -f deployment/database.py
+                        rm -f deployment/model_features.pkl
+                        rm -f deployment/sydney_housing_random_forest.pkl
+                        rm -f deployment/release-info.txt
+
+                        cp rollback/previous/app.py deployment/
+                        cp rollback/previous/database.py deployment/
+                        cp rollback/previous/model_features.pkl deployment/
+                        cp rollback/previous/sydney_housing_random_forest.pkl
+
+                        if [ -f rollback/previous/release-info.txt ]
+                        then
+                            cp rollback/previous/release-info.txt deployment/
+                        fi
+
+                        echo "Previous deployment restored."
+
+                        echo "Starting previous deployment..."
+
+                        nohup .venv/bin/python -m streamlit run deployment/app.py \
+                            --server.headless true \
+                            --server.port ${APP_PORT} \
+                            > deployment/streamlit.log 2>&1 &
+
+                        ROLLBACK_PID=$!
+
+                        echo "$ROLLBACK_PID" > deployment/streamlit.pid
+
+                        echo "Rollback process ID: $ROLLBACK_PID"
+
+                        ROLLBACK_OK=false
+
+                        for i in 1 2 3 4 5 6 7 8 9 10
+                        do
+                            if kill -0 "$ROLLBACK_PID" 2>/dev/null
+                            then
+                                if curl -fsS \
+                                    --max-time 3 \
+                                    -o /dev/null \
+                                    http://localhost:${APP_PORT}
+                                then
+                                    echo "Rollback health check PASSED."
+                                    echo "Previous deployment restored successfully."
+                                    ROLLBACK_OK=true
+                                    break
+                                fi
+                            fi
+
+                            echo "Waiting for rollback recovery... attempt $i/10"
+                            sleep 2
+                        done
+
+                        cat > rollback/rollback-info.txt <<EOF
+Deployment Status: FAILED
+Deployment Time: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+Jenkins Build: ${BUILD_NUMBER}
+Application: ${APP_NAME}
+Port: ${APP_PORT}
+Failed Process ID: ${NEW_PID}
+Previous Deployment Available: true
+Rollback Status: ${ROLLBACK_OK}
+Rollback Process ID: ${ROLLBACK_PID}
+EOF
+
+                        echo "=== ROLLBACK RESULT ==="
+                        cat rollback/rollback-info.txt
+
+                        if [ "$ROLLBACK_OK" = "true" ]
+                        then
+                            echo "Automatic rollback completed successfully."
+                        else
+                            echo "CRITICAL ALERT: Automatic rollback failed."
+                        fi
+                    else
+                        echo "No previous deployment was available."
+                        echo "Rollback could not be performed."
+
+                        cat > rollback/rollback-info.txt <<EOF
+Deployment Status: FAILED
+Deployment Time: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+Jenkins Build: ${BUILD_NUMBER}
+Application: ${APP_NAME}
+Port: ${APP_PORT}
+Failed Process ID: ${NEW_PID}
+Previous Deployment Available: false
+Rollback Status: Not Available
+EOF
+
+                        cat rollback/rollback-info.txt
+                    fi
+
+                    exit 1
                 '''
             }
         }
@@ -89,8 +290,11 @@ pipeline {
                     mkdir -p releases
 
                     VERSION="v1.0.${BUILD_NUMBER}"
+
                     RELEASE_FILE="${APP_NAME}-${VERSION}.tar.gz"
+
                     RELEASE_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
                     GIT_COMMIT=$(git rev-parse --short HEAD)
 
                     echo "Release version: ${VERSION}"
@@ -109,9 +313,11 @@ EOF
                     tar -czf "releases/${RELEASE_FILE}" deployment/
 
                     echo "Release package created:"
+
                     ls -lh "releases/${RELEASE_FILE}"
 
                     echo "Release metadata:"
+
                     cat deployment/release-info.txt
 
                     echo "Creating Git release tag..."
@@ -128,6 +334,7 @@ EOF
                     git push origin "${VERSION}"
 
                     echo "Git release tag pushed successfully:"
+
                     git ls-remote --tags origin "refs/tags/${VERSION}"
                 '''
             }
@@ -164,9 +371,11 @@ EOF
                         http://localhost:${APP_PORT})
 
                     HTTP_STATUS=$(echo "$HTTP_RESULT" | awk '{print $1}')
+
                     RESPONSE_TIME=$(echo "$HTTP_RESULT" | awk '{print $2}')
 
                     CPU_USAGE=$(ps -p "$PID" -o %cpu= | tr -d ' ')
+
                     MEMORY_KB=$(ps -p "$PID" -o rss= | tr -d ' ')
 
                     if [ -z "$CPU_USAGE" ]
@@ -182,10 +391,15 @@ EOF
                     MEMORY_MB=$(python3 -c "print(f'{int(${MEMORY_KB}) / 1024:.2f}')")
 
                     echo "=== LIVE MONITORING METRICS ==="
+
                     echo "HTTP status: ${HTTP_STATUS}"
+
                     echo "Response time: ${RESPONSE_TIME} seconds"
+
                     echo "CPU usage: ${CPU_USAGE}%"
+
                     echo "Memory usage: ${MEMORY_MB} MB"
+
                     echo "Process ID: ${PID}"
 
                     cat > monitoring/metrics.txt <<EOF
@@ -228,6 +442,7 @@ EOF
                     fi
 
                     echo "=== INCIDENT SIMULATION ==="
+
                     echo "Simulating an unavailable service on port 8599..."
 
                     if curl -fsS --max-time 2 http://localhost:8599 > /dev/null 2>&1
@@ -256,7 +471,9 @@ EOF
                     fi
 
                     echo "=== MONITORING SUMMARY ==="
+
                     cat monitoring/metrics.txt
+
                     cat monitoring/alert.log
 
                     echo "Monitoring and alerting checks PASSED."
@@ -270,11 +487,11 @@ EOF
         success {
             echo '=== PIPELINE COMPLETED SUCCESSFULLY ==='
 
-            archiveArtifacts artifacts: 'monitoring/metrics.txt, monitoring/alert.log, deployment/streamlit.log, releases/*.tar.gz',
+            archiveArtifacts artifacts: 'monitoring/metrics.txt, monitoring/alert.log, deployment/streamlit.log, releases/*.tar.gz, rollback/rollback-info.txt',
                              allowEmptyArchive: false,
                              fingerprint: true
 
-            echo 'Monitoring reports and release artifacts archived successfully.'
+            echo 'Monitoring reports, rollback evidence and release artifacts archived successfully.'
         }
 
         failure {
@@ -283,6 +500,7 @@ EOF
 
         always {
             echo '=== CLEANUP STAGE ==='
+
             sh '''
                 if [ -f deployment/streamlit.pid ]
                 then
@@ -291,6 +509,7 @@ EOF
                     if kill -0 "$PID" 2>/dev/null
                     then
                         echo "Stopping Streamlit staging process: $PID"
+
                         kill "$PID" || true
                     else
                         echo "Streamlit process $PID is no longer running."
@@ -301,6 +520,7 @@ EOF
             '''
 
             echo "Build number: ${BUILD_NUMBER}"
+
             echo "Pipeline result: ${currentBuild.currentResult}"
         }
     }
