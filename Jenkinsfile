@@ -179,7 +179,7 @@ EOF
                         MEMORY_KB="0"
                     fi
 
-                    MEMORY_MB=$(awk "BEGIN {printf \"%.2f\", ${MEMORY_KB}/1024}")
+                    MEMORY_MB=$(python3 -c "print(f'{int(${MEMORY_KB}) / 1024:.2f}')")
 
                     echo "=== LIVE MONITORING METRICS ==="
                     echo "HTTP status: ${HTTP_STATUS}"
