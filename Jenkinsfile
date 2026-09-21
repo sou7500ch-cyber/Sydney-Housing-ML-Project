@@ -113,6 +113,22 @@ EOF
 
                     echo "Release metadata:"
                     cat deployment/release-info.txt
+
+                    echo "Creating Git release tag..."
+
+                    if git rev-parse "${VERSION}" >/dev/null 2>&1
+                    then
+                        echo "Git tag ${VERSION} already exists locally."
+                    else
+                        git tag -a "${VERSION}" -m "Release ${VERSION}"
+                    fi
+
+                    echo "Pushing Git release tag to GitHub..."
+
+                    git push origin "${VERSION}"
+
+                    echo "Git release tag pushed successfully:"
+                    git ls-remote --tags origin "refs/tags/${VERSION}"
                 '''
             }
         }
