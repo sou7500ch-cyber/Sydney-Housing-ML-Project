@@ -4,6 +4,7 @@ pipeline {
     environment {
         PYTHON = 'python3'
         APP_PORT = '8502'
+        APP_NAME = 'sydney-housing'
     }
 
     stages {
@@ -87,10 +88,31 @@ pipeline {
                 sh '''
                     mkdir -p releases
 
-                    tar -czf releases/sydney-housing-${BUILD_NUMBER}.tar.gz deployment/
+                    VERSION="v1.0.${BUILD_NUMBER}"
+                    RELEASE_FILE="${APP_NAME}-${VERSION}.tar.gz"
+                    RELEASE_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+                    GIT_COMMIT=$(git rev-parse --short HEAD)
+
+                    echo "Release version: ${VERSION}"
+                    echo "Git commit: ${GIT_COMMIT}"
+                    echo "Release date: ${RELEASE_DATE}"
+
+                    cat > deployment/release-info.txt <<EOF
+Application: ${APP_NAME}
+Version: ${VERSION}
+Jenkins Build: ${BUILD_NUMBER}
+Git Commit: ${GIT_COMMIT}
+Release Date: ${RELEASE_DATE}
+Environment: staging
+EOF
+
+                    tar -czf "releases/${RELEASE_FILE}" deployment/
 
                     echo "Release package created:"
-                    ls -lh releases/
+                    ls -lh "releases/${RELEASE_FILE}"
+
+                    echo "Release metadata:"
+                    cat deployment/release-info.txt
                 '''
             }
         }
@@ -131,35 +153,35 @@ pipeline {
 
     post {
 
-    success {
-        echo '=== PIPELINE COMPLETED SUCCESSFULLY ==='
-    }
-
-    failure {
-        echo '=== PIPELINE FAILED ==='
-    }
-
-    always {
-        echo '=== CLEANUP STAGE ==='
-        sh '''
-            if [ -f deployment/streamlit.pid ]
-            then
-                PID=$(cat deployment/streamlit.pid)
-
-                if kill -0 "$PID" 2>/dev/null
-                then
-                    echo "Stopping Streamlit staging process: $PID"
-                    kill "$PID" || true
-                else
-                    echo "Streamlit process $PID is no longer running."
-                fi
-            else
-                echo "No Streamlit process file found."
-            fi
-        '''
-
-        echo "Build number: ${BUILD_NUMBER}"
-        echo "Pipeline result: ${currentBuild.currentResult}"
-    }
+        success {
+            echo '=== PIPELINE COMPLETED SUCCESSFULLY ==='
         }
+
+        failure {
+            echo '=== PIPELINE FAILED ==='
+        }
+
+        always {
+            echo '=== CLEANUP STAGE ==='
+            sh '''
+                if [ -f deployment/streamlit.pid ]
+                then
+                    PID=$(cat deployment/streamlit.pid)
+
+                    if kill -0 "$PID" 2>/dev/null
+                    then
+                        echo "Stopping Streamlit staging process: $PID"
+                        kill "$PID" || true
+                    else
+                        echo "Streamlit process $PID is no longer running."
+                    fi
+                else
+                    echo "No Streamlit process file found."
+                fi
+            '''
+
+            echo "Build number: ${BUILD_NUMBER}"
+            echo "Pipeline result: ${currentBuild.currentResult}"
+        }
+    }
 }
