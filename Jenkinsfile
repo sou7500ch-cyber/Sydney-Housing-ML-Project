@@ -3,7 +3,7 @@ pipeline {
 
     environment {
         PYTHON = 'python3'
-        APP_PORT = '8501'
+        APP_PORT = '8502'
     }
 
     stages {
@@ -61,7 +61,22 @@ pipeline {
                     cp model_features.pkl deployment/
                     cp sydney_housing_random_forest.pkl deployment/
 
-                    echo "Application deployment package prepared."
+                    echo "Application files copied to staging deployment."
+
+                    echo "Starting Streamlit staging deployment..."
+
+                    nohup .venv/bin/python -m streamlit run deployment/app.py \
+                        --server.headless true \
+                        --server.port ${APP_PORT} \
+                        > deployment/streamlit.log 2>&1 &
+
+                    echo $! > deployment/streamlit.pid
+
+                    echo "Streamlit staging process started."
+                    echo "Process ID:"
+                    cat deployment/streamlit.pid
+
+                    echo "Staging port: ${APP_PORT}"
                 '''
             }
         }
@@ -84,13 +99,31 @@ pipeline {
             steps {
                 echo '=== MONITORING STAGE ==='
                 sh '''
-                    echo "Application health validation"
+                    echo "Checking Streamlit staging application..."
 
-                    test -f deployment/app.py
-                    test -f deployment/database.py
-                    test -f deployment/sydney_housing_random_forest.pkl
+                    for i in 1 2 3 4 5 6 7 8 9 10
+                    do
+                        if curl -fsS http://localhost:${APP_PORT} > /dev/null
+                        then
+                            echo "Health check PASSED."
+                            echo "Streamlit staging application is responding on port ${APP_PORT}."
+                            exit 0
+                        fi
 
-                    echo "Health check PASSED."
+                        echo "Waiting for application to start... attempt $i/10"
+                        sleep 2
+                    done
+
+                    echo "Health check FAILED."
+                    echo "Streamlit application did not respond on port ${APP_PORT}."
+
+                    if [ -f deployment/streamlit.log ]
+                    then
+                        echo "=== STREAMLIT LOG ==="
+                        cat deployment/streamlit.log
+                    fi
+
+                    exit 1
                 '''
             }
         }
@@ -98,17 +131,35 @@ pipeline {
 
     post {
 
-        success {
-            echo '=== PIPELINE COMPLETED SUCCESSFULLY ==='
-        }
-
-        failure {
-            echo '=== PIPELINE FAILED ==='
-        }
-
-        always {
-            echo "Build number: ${BUILD_NUMBER}"
-            echo "Pipeline result: ${currentBuild.currentResult}"
-        }
+    success {
+        echo '=== PIPELINE COMPLETED SUCCESSFULLY ==='
     }
+
+    failure {
+        echo '=== PIPELINE FAILED ==='
+    }
+
+    always {
+        echo '=== CLEANUP STAGE ==='
+        sh '''
+            if [ -f deployment/streamlit.pid ]
+            then
+                PID=$(cat deployment/streamlit.pid)
+
+                if kill -0 "$PID" 2>/dev/null
+                then
+                    echo "Stopping Streamlit staging process: $PID"
+                    kill "$PID" || true
+                else
+                    echo "Streamlit process $PID is no longer running."
+                fi
+            else
+                echo "No Streamlit process file found."
+            fi
+        '''
+
+        echo "Build number: ${BUILD_NUMBER}"
+        echo "Pipeline result: ${currentBuild.currentResult}"
+    }
+        }
 }
