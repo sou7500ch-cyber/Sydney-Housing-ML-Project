@@ -137,31 +137,129 @@ EOF
             steps {
                 echo '=== MONITORING STAGE ==='
                 sh '''
-                    echo "Checking Streamlit staging application..."
+                    mkdir -p monitoring
 
-                    for i in 1 2 3 4 5 6 7 8 9 10
-                    do
-                        if curl -fsS http://localhost:${APP_PORT} > /dev/null
-                        then
-                            echo "Health check PASSED."
-                            echo "Streamlit staging application is responding on port ${APP_PORT}."
-                            exit 0
-                        fi
+                    echo "Starting application monitoring..."
 
-                        echo "Waiting for application to start... attempt $i/10"
-                        sleep 2
-                    done
-
-                    echo "Health check FAILED."
-                    echo "Streamlit application did not respond on port ${APP_PORT}."
-
-                    if [ -f deployment/streamlit.log ]
+                    if [ ! -f deployment/streamlit.pid ]
                     then
-                        echo "=== STREAMLIT LOG ==="
-                        cat deployment/streamlit.log
+                        echo "CRITICAL ALERT: Streamlit PID file is missing."
+                        exit 1
                     fi
 
-                    exit 1
+                    PID=$(cat deployment/streamlit.pid)
+
+                    echo "Monitored process: $PID"
+                    echo "Monitoring port: ${APP_PORT}"
+
+                    if ! kill -0 "$PID" 2>/dev/null
+                    then
+                        echo "CRITICAL ALERT: Streamlit process is not running."
+                        exit 1
+                    fi
+
+                    HTTP_RESULT=$(curl -fsS \
+                        -o /dev/null \
+                        -w "%{http_code} %{time_total}" \
+                        http://localhost:${APP_PORT})
+
+                    HTTP_STATUS=$(echo "$HTTP_RESULT" | awk '{print $1}')
+                    RESPONSE_TIME=$(echo "$HTTP_RESULT" | awk '{print $2}')
+
+                    CPU_USAGE=$(ps -p "$PID" -o %cpu= | tr -d ' ')
+                    MEMORY_KB=$(ps -p "$PID" -o rss= | tr -d ' ')
+
+                    if [ -z "$CPU_USAGE" ]
+                    then
+                        CPU_USAGE="0"
+                    fi
+
+                    if [ -z "$MEMORY_KB" ]
+                    then
+                        MEMORY_KB="0"
+                    fi
+
+                    MEMORY_MB=$(awk "BEGIN {printf \"%.2f\", ${MEMORY_KB}/1024}")
+
+                    echo "=== LIVE MONITORING METRICS ==="
+                    echo "HTTP status: ${HTTP_STATUS}"
+                    echo "Response time: ${RESPONSE_TIME} seconds"
+                    echo "CPU usage: ${CPU_USAGE}%"
+                    echo "Memory usage: ${MEMORY_MB} MB"
+                    echo "Process ID: ${PID}"
+
+                    cat > monitoring/metrics.txt <<EOF
+Application: ${APP_NAME}
+Jenkins Build: ${BUILD_NUMBER}
+Monitoring Time: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+HTTP Status: ${HTTP_STATUS}
+Response Time: ${RESPONSE_TIME} seconds
+CPU Usage: ${CPU_USAGE}%
+Memory Usage: ${MEMORY_MB} MB
+Process ID: ${PID}
+Port: ${APP_PORT}
+EOF
+
+                    echo "=== ALERT RULES ==="
+
+                    ALERT_TRIGGERED=false
+
+                    if [ "${HTTP_STATUS}" != "200" ]
+                    then
+                        echo "ALERT: HTTP health check failed."
+                        ALERT_TRIGGERED=true
+                    fi
+
+                    RESPONSE_LIMIT="2.0"
+
+                    if awk "BEGIN {exit !(${RESPONSE_TIME} > ${RESPONSE_LIMIT})}"
+                    then
+                        echo "ALERT: Response time exceeded ${RESPONSE_LIMIT} seconds."
+                        ALERT_TRIGGERED=true
+                    fi
+
+                    if [ "${ALERT_TRIGGERED}" = "true" ]
+                    then
+                        echo "MONITORING ALERT: One or more thresholds were exceeded."
+                        echo "Alert state: TRIGGERED" > monitoring/alert.log
+                    else
+                        echo "All monitoring thresholds are healthy."
+                        echo "Alert state: CLEAR" > monitoring/alert.log
+                    fi
+
+                    echo "=== INCIDENT SIMULATION ==="
+                    echo "Simulating an unavailable service on port 8599..."
+
+                    if curl -fsS --max-time 2 http://localhost:8599 > /dev/null 2>&1
+                    then
+                        echo "INCIDENT SIMULATION FAILED: Unexpected service response."
+                        exit 1
+                    else
+                        echo "ALERT SIMULATION: Unavailable service detected."
+                        echo "Incident alert successfully triggered."
+                    fi
+
+                    echo "=== RECOVERY VERIFICATION ==="
+
+                    RECOVERY_STATUS=$(curl -fsS \
+                        -o /dev/null \
+                        -w "%{http_code}" \
+                        http://localhost:${APP_PORT})
+
+                    if [ "${RECOVERY_STATUS}" = "200" ]
+                    then
+                        echo "Recovery verification PASSED."
+                        echo "Application returned HTTP ${RECOVERY_STATUS} after incident simulation."
+                    else
+                        echo "Recovery verification FAILED."
+                        exit 1
+                    fi
+
+                    echo "=== MONITORING SUMMARY ==="
+                    cat monitoring/metrics.txt
+                    cat monitoring/alert.log
+
+                    echo "Monitoring and alerting checks PASSED."
                 '''
             }
         }
